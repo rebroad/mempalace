@@ -102,7 +102,9 @@ def collection(palace_path):
     """A ChromaDB collection pre-seeded in the temp palace."""
     client = chromadb.PersistentClient(path=palace_path)
     col = client.get_or_create_collection("mempalace_drawers")
-    return col
+    yield col
+    client.delete_collection("mempalace_drawers")
+    del client
 
 
 @pytest.fixture

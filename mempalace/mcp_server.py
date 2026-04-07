@@ -283,16 +283,15 @@ def tool_add_drawer(
     if not col:
         return _no_palace()
 
-    # Duplicate check
-    dup = tool_check_duplicate(content, threshold=0.9)
-    if dup.get("is_duplicate"):
-        return {
-            "success": False,
-            "reason": "duplicate",
-            "matches": dup["matches"],
-        }
-
     drawer_id = f"drawer_{wing}_{room}_{hashlib.md5(content.encode()).hexdigest()[:16]}"
+
+    # Idempotency: if the deterministic ID already exists, return success as a no-op.
+    try:
+        existing = col.get(ids=[drawer_id])
+        if existing and existing["ids"]:
+            return {"success": True, "reason": "already_exists", "drawer_id": drawer_id}
+    except Exception:
+        pass
 
     try:
         col.upsert(
