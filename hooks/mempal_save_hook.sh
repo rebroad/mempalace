@@ -60,6 +60,9 @@ mkdir -p "$STATE_DIR"
 # Example: MEMPAL_DIR="$HOME/conversations"
 # Leave empty to skip auto-ingest (AI handles saving via the block reason).
 MEMPAL_DIR=""
+# Optional ingest mode for auto-ingest. Use "convos" for chat/session files.
+# Defaults to "projects" to preserve existing behavior.
+MEMPAL_MODE="${MEMPAL_MODE:-projects}"
 
 # Resolve the Python interpreter the hook should use.
 #
@@ -169,7 +172,11 @@ if [ "$SINCE_LAST" -ge "$SAVE_INTERVAL" ] && [ "$EXCHANGE_COUNT" -gt 0 ]; then
         MINE_DIR="$MEMPAL_DIR"
     fi
     if [ -n "$MINE_DIR" ]; then
-        mempalace mine "$MINE_DIR" >> "$STATE_DIR/hook.log" 2>&1 &
+        if [ "$MEMPAL_MODE" = "convos" ]; then
+            python3 -m mempalace mine "$MINE_DIR" --mode convos >> "$STATE_DIR/hook.log" 2>&1 &
+        else
+            python3 -m mempalace mine "$MINE_DIR" >> "$STATE_DIR/hook.log" 2>&1 &
+        fi
     fi
 
     # MEMPAL_VERBOSE toggle:
