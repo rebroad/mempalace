@@ -60,6 +60,9 @@ mkdir -p "$STATE_DIR"
 # Example: MEMPAL_DIR="$HOME/conversations"
 # Leave empty to skip auto-ingest (AI handles saving via the block reason).
 MEMPAL_DIR=""
+# Optional ingest mode for auto-ingest. Use "convos" for chat/session files.
+# Defaults to "projects" to preserve existing behavior.
+MEMPAL_MODE="${MEMPAL_MODE:-projects}"
 
 # Read JSON input from stdin
 INPUT=$(cat)
@@ -128,9 +131,11 @@ if [ "$SINCE_LAST" -ge "$SAVE_INTERVAL" ] && [ "$EXCHANGE_COUNT" -gt 0 ]; then
 
     # Optional: run mempalace ingest in background if MEMPAL_DIR is set
     if [ -n "$MEMPAL_DIR" ] && [ -d "$MEMPAL_DIR" ]; then
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        REPO_DIR="$(dirname "$SCRIPT_DIR")"
-        python3 -m mempalace mine "$MEMPAL_DIR" >> "$STATE_DIR/hook.log" 2>&1 &
+        if [ "$MEMPAL_MODE" = "convos" ]; then
+            python3 -m mempalace mine "$MEMPAL_DIR" --mode convos >> "$STATE_DIR/hook.log" 2>&1 &
+        else
+            python3 -m mempalace mine "$MEMPAL_DIR" >> "$STATE_DIR/hook.log" 2>&1 &
+        fi
     fi
 
     # Block the AI and tell it to save
