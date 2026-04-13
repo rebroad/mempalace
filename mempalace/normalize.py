@@ -22,20 +22,40 @@ from typing import Optional
 
 
 # ─── Noise stripping ─────────────────────────────────────────────────────
-# Claude Code and other tools inject system tags, hook output, UI chrome,
-# and tool-call JSON into transcripts. These waste drawer space and pollute
-# search results. Strip them before filing.
+# Claude Code and other tools inject system tags, hook output, and UI chrome
+# into transcripts. These waste drawer space and pollute search results.
+#
+# Verbatim is sacred — every pattern here is anchored to line boundaries and
+# refuses to cross blank lines, so a stray unclosed tag in one message can
+# never eat content from neighboring messages. When in doubt, leave text
+# alone.
 
-_NOISE_TAG_PATTERNS = [
-    re.compile(r"<system-reminder[^>]*>.*?</system-reminder>", re.DOTALL),
-    re.compile(r"<command-message[^>]*>.*?</command-message>", re.DOTALL),
-    re.compile(r"<command-name[^>]*>.*?</command-name>", re.DOTALL),
-    re.compile(r"<task-notification[^>]*>.*?</task-notification>", re.DOTALL),
-    re.compile(r"<user-prompt-submit-hook[^>]*>.*?</user-prompt-submit-hook>", re.DOTALL),
-    re.compile(r"<hook_output[^>]*>.*?</hook_output>", re.DOTALL),
-]
+_NOISE_TAGS = (
+    "system-reminder",
+    "command-message",
+    "command-name",
+    "task-notification",
+    "user-prompt-submit-hook",
+    "hook_output",
+)
 
-_NOISE_STRINGS = [
+
+def _tag_pattern(name: str) -> "re.Pattern[str]":
+    # Opening tag must begin a line (optionally after a `> ` blockquote marker,
+    # since _messages_to_transcript prefixes lines with `> `). Body is lazy but
+    # forbidden from crossing a blank line, so a dangling open tag can't span
+    # multiple messages. Closing tag eats optional trailing whitespace + newline.
+    return re.compile(
+        rf"(?m)^(?:> )?<{name}(?:\s[^>]*)?>" rf"(?:(?!\n\s*\n)[\s\S])*?" rf"</{name}>[ \t]*\n?"
+    )
+
+
+_NOISE_TAG_PATTERNS = [_tag_pattern(t) for t in _NOISE_TAGS]
+
+# Strings that identify an entire noise line when found at its start.
+# Matched case-sensitively and anchored to line-start so user prose mentioning
+# e.g. "current time:" in a sentence is untouched.
+_NOISE_LINE_PREFIXES = (
     "CURRENT TIME:",
     "VERIFIED FACTS (do not contradict)",
     "AGENT SPECIALIZATION:",
@@ -46,20 +66,39 @@ _NOISE_STRINGS = [
     "Auto-save reminder...",
     "Checking pipeline...",
     "MemPalace auto-save checkpoint.",
+)
+
+_NOISE_LINE_PATTERNS = [
+    re.compile(rf"(?m)^(?:> )?{re.escape(p)}.*\n?") for p in _NOISE_LINE_PREFIXES
 ]
+
+# Claude Code TUI hook-run chrome, e.g. "Ran 2 Stop hook", "Ran 1 PreCompact hook".
+# Line-anchored, case-sensitive, explicit hook names — prose like
+# "our CI has a stop hook" stays intact.
+_HOOK_LINE_RE = re.compile(
+    r"(?m)^(?:> )?Ran \d+ (?:Stop|PreCompact|PreToolUse|PostToolUse|UserPromptSubmit|Notification|SessionStart|SessionEnd) hook[s]?.*\n?"
+)
+
+# "… +N lines" collapsed-output marker, line-anchored.
+_COLLAPSED_LINES_RE = re.compile(r"(?m)^(?:> )?…\s*\+\d+ lines.*\n?")
 
 
 def strip_noise(text: str) -> str:
-    """Remove system tags, hook output, and Claude Code UI chrome from text."""
+    """Remove system tags, hook output, and Claude Code UI chrome from text.
+
+    All patterns are line-anchored. User prose that happens to mention these
+    strings inline (e.g., documenting them) is preserved verbatim.
+    """
     for pat in _NOISE_TAG_PATTERNS:
         text = pat.sub("", text)
-    for noise in _NOISE_STRINGS:
-        text = text.replace(noise, "")
-    # Strip Claude Code UI chrome
-    text = re.sub(r".*\(ctrl\+o to expand\).*\n?", "", text)
-    text = re.sub(r"Ran \d+ (?:stop|pre|post)\s*hook.*\n?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"…\s*\+\d+ lines.*\n?", "", text)
-    # Collapse runs of blank lines
+    for pat in _NOISE_LINE_PATTERNS:
+        text = pat.sub("", text)
+    text = _HOOK_LINE_RE.sub("", text)
+    text = _COLLAPSED_LINES_RE.sub("", text)
+    # Strip the Claude Code collapsed-output chrome "[N tokens] (ctrl+o to expand)".
+    # Narrow shape — a bare "(ctrl+o to expand)" in user prose stays intact.
+    text = re.sub(r"\s*\[\d+\s+tokens?\]\s*\(ctrl\+o to expand\)", "", text)
+    # Collapse runs of blank lines created by the removals
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     return text.strip()
 
@@ -84,23 +123,21 @@ def normalize(filepath: str) -> str:
     if not content.strip():
         return content
 
-    # Already has > markers — pass through (strip noise but preserve trailing newline)
+    # Already has > markers — pass through unchanged.
     lines = content.split("\n")
     if sum(1 for line in lines if line.strip().startswith(">")) >= 3:
-        cleaned = strip_noise(content)
-        # Preserve trailing newline if original had one
-        if content.endswith("\n") and not cleaned.endswith("\n"):
-            cleaned += "\n"
-        return cleaned
+        return content
 
-    # Try JSON normalization
+    # Try JSON normalization. strip_noise is applied inside the Claude Code
+    # JSONL parser (the only format that injects system tags/hook chrome);
+    # other formats pass through verbatim.
     ext = Path(filepath).suffix.lower()
     if ext in (".json", ".jsonl") or content.strip()[:1] in ("{", "["):
         normalized = _try_normalize_json(content)
         if normalized:
-            return strip_noise(normalized)
+            return normalized
 
-    return strip_noise(content)
+    return content
 
 
 def _try_normalize_json(content: str) -> Optional[str]:
@@ -160,6 +197,10 @@ def _try_claude_code_jsonl(content: str) -> Optional[str]:
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in msg_content
             )
             text = _extract_content(msg_content, tool_use_map=tool_use_map)
+            # Strip Claude Code system-injected noise per message, never across
+            # message boundaries — prevents span-eating.
+            if text:
+                text = strip_noise(text)
             if text:
                 if is_tool_only and messages and messages[-1][0] == "assistant":
                     # Append tool results to the previous assistant message
@@ -169,6 +210,8 @@ def _try_claude_code_jsonl(content: str) -> Optional[str]:
                     messages.append(("user", text))
         elif msg_type == "assistant":
             text = _extract_content(msg_content, tool_use_map=tool_use_map)
+            if text:
+                text = strip_noise(text)
             if text:
                 # If previous message is also assistant (multi-turn tool loop),
                 # merge into the same assistant turn
