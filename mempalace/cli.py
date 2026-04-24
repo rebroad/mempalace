@@ -71,7 +71,8 @@ def _ensure_mempalace_files_gitignored(project_dir) -> bool:
 def cmd_init(args):
     import json
     from pathlib import Path
-    from .entity_detector import scan_for_detection, detect_entities, confirm_entities
+    from .entity_detector import confirm_entities
+    from .project_scanner import discover_entities
     from .room_detector_local import detect_rooms_local
 
     cfg = MempalaceConfig()
@@ -85,25 +86,23 @@ def cmd_init(args):
         languages = cfg.entity_languages
     languages_tuple = tuple(languages)
 
-    # Pass 1: auto-detect people and projects from file content
+    # Pass 1: discover entities — manifests + git authors first, prose detection
+    # as supplement for names mentioned only in docs/notes.
     print(f"\n  Scanning for entities in: {args.dir}")
     if languages_tuple != ("en",):
         print(f"  Languages: {', '.join(languages_tuple)}")
-    files = scan_for_detection(args.dir)
-    if files:
-        print(f"  Reading {len(files)} files...")
-        detected = detect_entities(files, languages=languages_tuple)
-        total = len(detected["people"]) + len(detected["projects"]) + len(detected["uncertain"])
-        if total > 0:
-            confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
-            # Save confirmed entities to <project>/entities.json for the miner
-            if confirmed["people"] or confirmed["projects"]:
-                entities_path = Path(args.dir).expanduser().resolve() / "entities.json"
-                with open(entities_path, "w") as f:
-                    json.dump(confirmed, f, indent=2)
-                print(f"  Entities saved: {entities_path}")
-        else:
-            print("  No entities detected — proceeding with directory-based rooms.")
+    detected = discover_entities(args.dir, languages=languages_tuple)
+    total = len(detected["people"]) + len(detected["projects"]) + len(detected["uncertain"])
+    if total > 0:
+        confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
+        # Save confirmed entities to <project>/entities.json for the miner
+        if confirmed["people"] or confirmed["projects"]:
+            entities_path = Path(args.dir).expanduser().resolve() / "entities.json"
+            with open(entities_path, "w") as f:
+                json.dump(confirmed, f, indent=2)
+            print(f"  Entities saved: {entities_path}")
+    else:
+        print("  No entities detected — proceeding with directory-based rooms.")
 
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False))
