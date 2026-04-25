@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 import chromadb
 
+from ..chroma_compat import LocalHashEmbeddingFunction
 from .base import (
     BaseBackend,
     BaseCollection,
@@ -26,6 +27,11 @@ logger = logging.getLogger(__name__)
 _REQUIRED_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains"})
 _OPTIONAL_OPERATORS = frozenset({"$gt", "$gte", "$lt", "$lte"})
 _SUPPORTED_OPERATORS = _REQUIRED_OPERATORS | _OPTIONAL_OPERATORS
+_LOCAL_HASH_EMBEDDER = LocalHashEmbeddingFunction()
+
+
+def _embed_texts(texts: list[str]) -> list[list[float]]:
+    return _LOCAL_HASH_EMBEDDER(texts)
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -187,6 +193,8 @@ class ChromaCollection(BaseCollection):
     # ------------------------------------------------------------------
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
+        if embeddings is None and documents is not None:
+            embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"documents": documents, "ids": ids}
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
@@ -195,6 +203,8 @@ class ChromaCollection(BaseCollection):
         self._collection.add(**kwargs)
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
+        if embeddings is None and documents is not None:
+            embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"documents": documents, "ids": ids}
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
@@ -212,6 +222,8 @@ class ChromaCollection(BaseCollection):
     ):
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
+        if embeddings is None and documents is not None:
+            embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"ids": ids}
         if documents is not None:
             kwargs["documents"] = documents
@@ -260,7 +272,7 @@ class ChromaCollection(BaseCollection):
             "include": chroma_include,
         }
         if query_texts is not None:
-            kwargs["query_texts"] = query_texts
+            kwargs["query_embeddings"] = _embed_texts(query_texts)
         if query_embeddings is not None:
             kwargs["query_embeddings"] = query_embeddings
         if where is not None:

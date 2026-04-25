@@ -1619,6 +1619,24 @@ def handle_request(request):
     elif method.startswith("notifications/"):
         # Notifications (no id) never get a response per JSON-RPC spec
         return None
+    elif method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resources": []},
+        }
+    elif method == "resources/templates/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resourceTemplates": []},
+        }
+    elif method == "resources/read":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32602, "message": "Unknown resource"},
+        }
     elif method == "tools/list":
         return {
             "jsonrpc": "2.0",
