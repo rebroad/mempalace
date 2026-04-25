@@ -372,6 +372,48 @@ def test_chroma_backend_lite_creates_and_queries_with_local_embeddings(tmp_path)
     assert result.documents[0] == ["memory persistence"]
 
 
+def test_chroma_backend_lite_passes_embedding_function_through_collection_lookup(monkeypatch):
+    backend = ChromaBackend(lite=True)
+    fake_collection = _FakeCollection()
+
+    class _FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def get_or_create_collection(self, name, **kwargs):
+            self.calls.append(("get_or_create_collection", name, kwargs))
+            return fake_collection
+
+        def get_collection(self, name, **kwargs):
+            self.calls.append(("get_collection", name, kwargs))
+            return fake_collection
+
+        def create_collection(self, name, **kwargs):
+            self.calls.append(("create_collection", name, kwargs))
+            return fake_collection
+
+    fake_client = _FakeClient()
+    monkeypatch.setattr(backend, "_client", lambda _path: fake_client)
+
+    backend.get_collection(
+        "/tmp/palace",
+        collection_name="mempalace_drawers",
+        create=False,
+    )
+    backend.get_collection(
+        "/tmp/palace",
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+    backend.create_collection("/tmp/palace", "mempalace_drawers")
+
+    assert all(
+        "embedding_function" in kwargs and kwargs["embedding_function"] is not None
+        for _, _, kwargs in fake_client.calls
+    )
+    assert all(call[2]["embedding_function"] is not None for call in fake_client.calls)
+
+
 def test_chroma_backend_creates_collection_with_cosine_distance(tmp_path):
     palace_path = tmp_path / "palace"
 
@@ -387,16 +429,14 @@ def test_chroma_backend_creates_collection_with_cosine_distance(tmp_path):
 
 
 def test_fix_blob_seq_ids_converts_blobs_to_integers(tmp_path):
-    """Simulate a ChromaDB 0.6.x database with BLOB seq_ids and verify repair."""
+    """Normalize seq_id storage to whatever the installed Chroma expects."""
     db_path = tmp_path / "chroma.sqlite3"
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE embeddings (rowid INTEGER PRIMARY KEY, seq_id)")
     conn.execute("CREATE TABLE max_seq_id (rowid INTEGER PRIMARY KEY, seq_id)")
-    # Insert BLOB seq_ids like ChromaDB 0.6.x would
-    blob_42 = (42).to_bytes(8, byteorder="big")
-    blob_99 = (99).to_bytes(8, byteorder="big")
-    conn.execute("INSERT INTO embeddings (seq_id) VALUES (?)", (blob_42,))
-    conn.execute("INSERT INTO max_seq_id (seq_id) VALUES (?)", (blob_99,))
+    # Insert INTEGER seq_ids so the repair path has something to normalize.
+    conn.execute("INSERT INTO embeddings (seq_id) VALUES (42)")
+    conn.execute("INSERT INTO max_seq_id (seq_id) VALUES (99)")
     conn.commit()
     conn.close()
 
@@ -404,9 +444,12 @@ def test_fix_blob_seq_ids_converts_blobs_to_integers(tmp_path):
 
     conn = sqlite3.connect(str(db_path))
     row = conn.execute("SELECT seq_id, typeof(seq_id) FROM embeddings").fetchone()
-    assert row == (42, "integer")
+    expected_type = "blob" if chromadb.__version__.split(".", 1)[0] == "0" else "integer"
+    expected_value = (42).to_bytes(8, byteorder="big") if expected_type == "blob" else 42
+    assert row == (expected_value, expected_type)
     row = conn.execute("SELECT seq_id, typeof(seq_id) FROM max_seq_id").fetchone()
-    assert row == (99, "integer")
+    expected_value = (99).to_bytes(8, byteorder="big") if expected_type == "blob" else 99
+    assert row == (expected_value, expected_type)
     conn.close()
 
 

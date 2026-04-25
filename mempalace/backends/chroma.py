@@ -143,35 +143,53 @@ def quarantine_stale_hnsw(palace_path: str, stale_seconds: float = 3600.0) -> li
 
 
 def _fix_blob_seq_ids(palace_path: str) -> None:
-    """Fix ChromaDB 0.6.x -> 1.5.x migration bug: BLOB seq_ids -> INTEGER.
+    """Normalize Chroma seq_id storage to the runtime's expected type.
 
-    ChromaDB 0.6.x stored seq_id as big-endian 8-byte BLOBs. ChromaDB 1.5.x
-    expects INTEGER. The auto-migration doesn't convert existing rows, causing
-    the Rust compactor to crash with "mismatched types; Rust type u64 (as SQL
-    type INTEGER) is not compatible with SQL type BLOB".
-
-    Must run BEFORE PersistentClient is created (the compactor fires on init).
+    Some deployed Chroma builds expect ``seq_id`` to be stored as an 8-byte
+    BLOB, while others expect INTEGER. Existing palaces can carry the opposite
+    type across upgrades, which then blows up during collection startup or
+    query. The repair step rewrites any mismatched rows to the format expected
+    by the installed Chroma runtime before ``PersistentClient`` is opened.
     """
     db_path = os.path.join(palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path):
         return
+
+    chroma_version = getattr(chromadb, "__version__", "0.0.0")
+    try:
+        major = int(str(chroma_version).split(".", 1)[0])
+    except Exception:
+        major = 0
+    expect_blob = major == 0
+
     try:
         with sqlite3.connect(db_path) as conn:
             for table in ("embeddings", "max_seq_id"):
                 try:
                     rows = conn.execute(
-                        f"SELECT rowid, seq_id FROM {table} WHERE typeof(seq_id) = 'blob'"
+                        f"SELECT rowid, seq_id FROM {table} "
+                        f"WHERE typeof(seq_id) = ?",
+                        ("integer",) if expect_blob else ("blob",),
                     ).fetchall()
                 except sqlite3.OperationalError:
                     continue
                 if not rows:
                     continue
-                updates = [(int.from_bytes(blob, byteorder="big"), rowid) for rowid, blob in rows]
+                if expect_blob:
+                    updates = [
+                        (int(seq_id).to_bytes(8, byteorder="big"), rowid)
+                        for rowid, seq_id in rows
+                    ]
+                else:
+                    updates = [
+                        (int.from_bytes(seq_id, byteorder="big"), rowid)
+                        for rowid, seq_id in rows
+                    ]
                 conn.executemany(f"UPDATE {table} SET seq_id = ? WHERE rowid = ?", updates)
-                logger.info("Fixed %d BLOB seq_ids in %s", len(updates), table)
+                logger.info("Normalized %d seq_ids in %s", len(updates), table)
             conn.commit()
     except Exception:
-        logger.exception("Could not fix BLOB seq_ids in %s", db_path)
+        logger.exception("Could not normalize seq_ids in %s", db_path)
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +446,11 @@ class ChromaBackend(BaseBackend):
         self._closed = False
         self._lite = _lite_mode_from_env() if lite is None else bool(lite)
 
+    def _collection_kwargs(self) -> dict[str, Any]:
+        if not self._lite:
+            return {}
+        return {"embedding_function": _LOCAL_HASH_EMBEDDER}
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -557,10 +580,12 @@ class ChromaBackend(BaseBackend):
 
         if create:
             collection = client.get_or_create_collection(
-                collection_name, metadata={"hnsw:space": hnsw_space}
+                collection_name,
+                metadata={"hnsw:space": hnsw_space},
+                **self._collection_kwargs(),
             )
         else:
-            collection = client.get_collection(collection_name)
+            collection = client.get_collection(collection_name, **self._collection_kwargs())
         return ChromaCollection(collection, lite=self._lite)
 
     def close_palace(self, palace) -> None:
@@ -602,9 +627,11 @@ class ChromaBackend(BaseBackend):
     ) -> ChromaCollection:
         """Create (not get-or-create) ``collection_name`` with the given HNSW space."""
         collection = self._client(palace_path).create_collection(
-            collection_name, metadata={"hnsw:space": hnsw_space}
+            collection_name,
+            metadata={"hnsw:space": hnsw_space},
+            **self._collection_kwargs(),
         )
-        return ChromaCollection(collection)
+        return ChromaCollection(collection, lite=self._lite)
 
 
 def _normalize_get_collection_args(args, kwargs):
