@@ -106,6 +106,8 @@ mempalace status
 
 Three mining modes: **projects** (code and docs), **convos** (conversation exports), and **general** (auto-classifies into decisions, preferences, milestones, problems, and emotional context). Everything stays on your machine.
 
+For Raspberry Pi 3 / armv7 deployment notes, see [docs/armv7-pi3.md](docs/armv7-pi3.md).
+
 ---
 
 ## How You Actually Use It

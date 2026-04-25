@@ -157,8 +157,10 @@ def cmd_status(args):
 
 def cmd_repair(args):
     """Rebuild palace vector index from SQLite metadata."""
-    import chromadb
     import shutil
+
+    from .chroma_compat import get_client as get_chroma_client
+    from .chroma_compat import get_collection as get_chroma_collection
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
 
@@ -173,8 +175,8 @@ def cmd_repair(args):
 
     # Try to read existing drawers
     try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
+        client = get_chroma_client(palace_path)
+        col = get_chroma_collection(palace_path)
         total = col.count()
         print(f"  Drawers found: {total}")
     except Exception as e:
@@ -210,7 +212,7 @@ def cmd_repair(args):
 
     print("  Rebuilding collection...")
     client.delete_collection("mempalace_drawers")
-    new_col = client.create_collection("mempalace_drawers")
+    new_col = get_chroma_collection(palace_path, create=True)
 
     filed = 0
     for i in range(0, len(all_ids), batch_size):
@@ -261,10 +263,11 @@ def cmd_compress(args):
     else:
         dialect = Dialect()
 
+    from .chroma_compat import get_collection as get_chroma_collection
+
     # Connect to palace
     try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
+        col = get_chroma_collection(palace_path)
     except Exception:
         print(f"\n  No palace found at {palace_path}")
         print("  Run: mempalace init <dir> then mempalace mine <dir>")

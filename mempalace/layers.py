@@ -21,8 +21,7 @@ import sys
 from pathlib import Path
 from collections import defaultdict
 
-import chromadb
-
+from .chroma_compat import get_collection as get_chroma_collection
 from .config import MempalaceConfig
 
 
@@ -91,8 +90,7 @@ class Layer1:
     def generate(self) -> str:
         """Pull top drawers from ChromaDB and format as compact L1 text."""
         try:
-            client = chromadb.PersistentClient(path=self.palace_path)
-            col = client.get_collection("mempalace_drawers")
+            col = get_chroma_collection(self.palace_path)
         except Exception:
             return "## L1 — No palace found. Run: mempalace mine <dir>"
 
@@ -196,8 +194,7 @@ class Layer2:
     def retrieve(self, wing: str = None, room: str = None, n_results: int = 10) -> str:
         """Retrieve drawers filtered by wing and/or room."""
         try:
-            client = chromadb.PersistentClient(path=self.palace_path)
-            col = client.get_collection("mempalace_drawers")
+            col = get_chroma_collection(self.palace_path)
         except Exception:
             return "No palace found."
 
@@ -260,8 +257,7 @@ class Layer3:
     def search(self, query: str, wing: str = None, room: str = None, n_results: int = 5) -> str:
         """Semantic search, returns compact result text."""
         try:
-            client = chromadb.PersistentClient(path=self.palace_path)
-            col = client.get_collection("mempalace_drawers")
+            col = get_chroma_collection(self.palace_path)
         except Exception:
             return "No palace found."
 
@@ -316,8 +312,7 @@ class Layer3:
     ) -> list:
         """Return raw dicts instead of formatted text."""
         try:
-            client = chromadb.PersistentClient(path=self.palace_path)
-            col = client.get_collection("mempalace_drawers")
+            col = get_chroma_collection(self.palace_path)
         except Exception:
             return []
 
@@ -437,8 +432,7 @@ class MemoryStack:
 
         # Count drawers
         try:
-            client = chromadb.PersistentClient(path=self.palace_path)
-            col = client.get_collection("mempalace_drawers")
+            col = get_chroma_collection(self.palace_path)
             count = col.count()
             result["total_drawers"] = count
         except Exception:

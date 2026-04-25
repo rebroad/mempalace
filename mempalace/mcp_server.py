@@ -29,7 +29,8 @@ from .config import MempalaceConfig
 from .version import __version__
 from .searcher import search_memories
 from .palace_graph import traverse, find_tunnels, graph_stats
-import chromadb
+from .chroma_compat import get_client as get_chroma_client
+from .chroma_compat import get_collection as get_chroma_collection
 
 from .knowledge_graph import KnowledgeGraph
 
@@ -69,11 +70,13 @@ def _get_collection(create=False):
     global _client_cache, _collection_cache
     try:
         if _client_cache is None:
-            _client_cache = chromadb.PersistentClient(path=_config.palace_path)
-        if create:
-            _collection_cache = _client_cache.get_or_create_collection(_config.collection_name)
-        elif _collection_cache is None:
-            _collection_cache = _client_cache.get_collection(_config.collection_name)
+            _client_cache = get_chroma_client(_config.palace_path)
+        if create or _collection_cache is None:
+            _collection_cache = get_chroma_collection(
+                _config.palace_path,
+                collection_name=_config.collection_name,
+                create=create,
+            )
         return _collection_cache
     except Exception:
         return None
@@ -734,6 +737,24 @@ def handle_request(request):
         }
     elif method == "notifications/initialized":
         return None
+    elif method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resources": []},
+        }
+    elif method == "resources/templates/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resourceTemplates": []},
+        }
+    elif method == "resources/read":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32602, "message": "Unknown resource"},
+        }
     elif method == "tools/list":
         return {
             "jsonrpc": "2.0",

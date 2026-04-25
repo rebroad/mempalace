@@ -17,6 +17,9 @@ from collections import defaultdict
 
 import chromadb
 
+from .chroma_compat import get_client as get_chroma_client
+from .chroma_compat import get_collection as get_chroma_collection
+
 READABLE_EXTENSIONS = {
     ".txt",
     ".md",
@@ -394,12 +397,7 @@ def chunk_text(content: str, source_file: str) -> list:
 
 
 def get_collection(palace_path: str):
-    os.makedirs(palace_path, exist_ok=True)
-    client = chromadb.PersistentClient(path=palace_path)
-    try:
-        return client.get_collection("mempalace_drawers")
-    except Exception:
-        return client.create_collection("mempalace_drawers")
+    return get_chroma_collection(palace_path)
 
 
 def file_already_mined(collection, source_file: str) -> bool:
@@ -659,8 +657,7 @@ def mine(
 def status(palace_path: str):
     """Show what's been filed in the palace."""
     try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
+        col = get_chroma_collection(palace_path)
     except Exception:
         print(f"\n  No palace found at {palace_path}")
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
