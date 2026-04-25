@@ -28,10 +28,16 @@ _REQUIRED_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin", "$and", "$or", "$c
 _OPTIONAL_OPERATORS = frozenset({"$gt", "$gte", "$lt", "$lte"})
 _SUPPORTED_OPERATORS = _REQUIRED_OPERATORS | _OPTIONAL_OPERATORS
 _LOCAL_HASH_EMBEDDER = LocalHashEmbeddingFunction()
+_LITE_ENV_VAR = "MEMPALACE_LITE"
 
 
 def _embed_texts(texts: list[str]) -> list[list[float]]:
     return _LOCAL_HASH_EMBEDDER(texts)
+
+
+def _lite_mode_from_env() -> bool:
+    value = os.environ.get(_LITE_ENV_VAR, "")
+    return value.lower() not in {"", "0", "false", "no", "off"}
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -185,15 +191,16 @@ def _as_list(v: Any) -> list:
 class ChromaCollection(BaseCollection):
     """Thin adapter translating ChromaDB dict returns into typed results."""
 
-    def __init__(self, collection):
+    def __init__(self, collection, *, lite: bool = False):
         self._collection = collection
+        self._lite = lite
 
     # ------------------------------------------------------------------
     # Writes
     # ------------------------------------------------------------------
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
-        if embeddings is None and documents is not None:
+        if self._lite and embeddings is None and documents is not None:
             embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"documents": documents, "ids": ids}
         if metadatas is not None:
@@ -203,7 +210,7 @@ class ChromaCollection(BaseCollection):
         self._collection.add(**kwargs)
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
-        if embeddings is None and documents is not None:
+        if self._lite and embeddings is None and documents is not None:
             embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"documents": documents, "ids": ids}
         if metadatas is not None:
@@ -222,7 +229,7 @@ class ChromaCollection(BaseCollection):
     ):
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
-        if embeddings is None and documents is not None:
+        if self._lite and embeddings is None and documents is not None:
             embeddings = _embed_texts(documents)
         kwargs: dict[str, Any] = {"ids": ids}
         if documents is not None:
@@ -272,7 +279,10 @@ class ChromaCollection(BaseCollection):
             "include": chroma_include,
         }
         if query_texts is not None:
-            kwargs["query_embeddings"] = _embed_texts(query_texts)
+            if self._lite:
+                kwargs["query_embeddings"] = _embed_texts(query_texts)
+            else:
+                kwargs["query_texts"] = query_texts
         if query_embeddings is not None:
             kwargs["query_embeddings"] = query_embeddings
         if where is not None:
@@ -410,12 +420,13 @@ class ChromaBackend(BaseBackend):
         }
     )
 
-    def __init__(self):
+    def __init__(self, lite: Optional[bool] = None):
         # palace_path -> PersistentClient
         self._clients: dict[str, Any] = {}
         # palace_path -> (inode, mtime) of chroma.sqlite3 at cache time.
         self._freshness: dict[str, tuple[int, float]] = {}
         self._closed = False
+        self._lite = _lite_mode_from_env() if lite is None else bool(lite)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -550,7 +561,7 @@ class ChromaBackend(BaseBackend):
             )
         else:
             collection = client.get_collection(collection_name)
-        return ChromaCollection(collection)
+        return ChromaCollection(collection, lite=self._lite)
 
     def close_palace(self, palace) -> None:
         """Drop cached handles for ``palace``. Accepts ``PalaceRef`` or legacy path str."""

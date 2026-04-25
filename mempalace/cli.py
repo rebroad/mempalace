@@ -7,6 +7,7 @@ Two ways to ingest:
   Conversations: mempalace mine <convo-dir> --mode convos     (Claude Code, Claude.ai, ChatGPT, Slack exports)
 
 Same palace. Same search. Different ingest strategies.
+Use `--lite` on constrained hosts to switch Chroma to local hash embeddings.
 
 Commands:
     mempalace init <dir>                  Detect rooms from folder structure
@@ -561,6 +562,11 @@ def main():
         default=None,
         help="Where the palace lives (default: from ~/.mempalace/config.json or ~/.mempalace/palace)",
     )
+    parser.add_argument(
+        "--lite",
+        action="store_true",
+        help="Use the lite Chroma path with local hash embeddings instead of Chroma's default embedder",
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -773,6 +779,9 @@ def main():
     sub.add_parser("status", help="Show what's been filed")
 
     args = parser.parse_args()
+
+    if getattr(args, "lite", False):
+        os.environ["MEMPALACE_LITE"] = "1"
 
     if not args.command:
         parser.print_help()

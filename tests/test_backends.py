@@ -140,6 +140,38 @@ def test_chroma_collection_delegates_writes():
     assert kinds == ["add", "upsert", "delete", "count"]
 
 
+def test_chroma_collection_uses_default_chroma_embedding_path_by_default(monkeypatch):
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+
+    monkeypatch.setattr("mempalace.backends.chroma._embed_texts", lambda _: pytest.fail("should not be called"))
+
+    collection.add(documents=["d"], ids=["1"], metadatas=[{"wing": "w"}])
+    collection.query(query_texts=["q"])
+
+    assert fake.calls[0][1]["documents"] == ["d"]
+    assert "embeddings" not in fake.calls[0][1]
+    assert fake.calls[1][1]["query_texts"] == ["q"]
+    assert "query_embeddings" not in fake.calls[1][1]
+
+
+def test_chroma_collection_lite_uses_local_embeddings(monkeypatch):
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake, lite=True)
+
+    monkeypatch.setattr(
+        "mempalace.backends.chroma._embed_texts",
+        lambda texts: [[float(len(texts[0]))]],
+    )
+
+    collection.add(documents=["d"], ids=["1"], metadatas=[{"wing": "w"}])
+    collection.query(query_texts=["q"])
+
+    assert fake.calls[0][1]["embeddings"] == [[1.0]]
+    assert "query_texts" not in fake.calls[1][1]
+    assert fake.calls[1][1]["query_embeddings"] == [[1.0]]
+
+
 def test_registry_exposes_chroma_by_default():
     names = available_backends()
     assert "chroma" in names
@@ -318,6 +350,26 @@ def test_chroma_backend_create_true_creates_directory_and_collection(tmp_path):
 
     client = chromadb.PersistentClient(path=str(palace_path))
     client.get_collection("mempalace_drawers")
+
+
+def test_chroma_backend_lite_creates_and_queries_with_local_embeddings(tmp_path):
+    palace_path = tmp_path / "palace"
+
+    collection = ChromaBackend(lite=True).get_collection(
+        str(palace_path),
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+
+    collection.add(
+        documents=["memory persistence"],
+        ids=["doc-1"],
+        metadatas=[{"wing": "w"}],
+    )
+    result = collection.query(query_texts=["memory persistence"], n_results=1)
+
+    assert result.ids[0] == ["doc-1"]
+    assert result.documents[0] == ["memory persistence"]
 
 
 def test_chroma_backend_creates_collection_with_cosine_distance(tmp_path):

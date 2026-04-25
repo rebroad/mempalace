@@ -1,6 +1,7 @@
 """Tests for mempalace.cli — the main CLI dispatcher."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -307,6 +308,17 @@ def test_main_mine_dispatches():
     ):
         main()
         mock_cmd.assert_called_once()
+
+
+def test_main_lite_sets_env_and_dispatches(monkeypatch):
+    monkeypatch.delenv("MEMPALACE_LITE", raising=False)
+    with (
+        patch("sys.argv", ["mempalace", "--lite", "status"]),
+        patch("mempalace.cli.cmd_status") as mock_cmd,
+    ):
+        main()
+        mock_cmd.assert_called_once()
+    assert os.environ["MEMPALACE_LITE"] == "1"
 
 
 def test_main_wakeup_dispatches():
