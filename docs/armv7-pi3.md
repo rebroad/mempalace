@@ -23,20 +23,24 @@ The stock install path did not work on `pi3` for a few separate reasons:
 The runtime that worked on `pi3` was:
 
 1. Python `3.9.19` installed locally at `~/.local/python3.9.19`.
-2. A dedicated virtual environment at `~/src/mempalace/.venv`.
-3. A local SQLite build exposed through `pysqlite3` so Chroma could use a
-   modern SQLite version.
-4. Local BLAS/OpenBLAS libraries on `LD_LIBRARY_PATH` for the native numeric
+2. A shared virtual environment at `~/.local/mempalace-venv`.
+3. A local SQLite build installed at `~/.local/sqlite-3.45.3`.
+4. `pysqlite3` built from source against that local SQLite install, so Chroma
+   uses a real SQLite engine with `RETURNING` support instead of the older
+   system `sqlite3` module.
+5. Local BLAS/OpenBLAS libraries on `LD_LIBRARY_PATH` for the native numeric
    stack.
-5. Source builds for the native pieces that did not have usable armv7 wheels.
+6. Source builds for the native pieces that did not have usable armv7 wheels.
 
 In practice, the MemPalace runtime needed these environment variables when it
 was launched from the Telegram bot or from a shell on the Pi:
 
 ```bash
-export LD_LIBRARY_PATH="$HOME/.local/openblas-bullseye/lib:$HOME/.local/atlas-bullseye/lib:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="$HOME/.local/sqlite-3.45.3/lib:$HOME/.local/openblas-bullseye/usr/lib/arm-linux-gnueabihf/openblas-pthread:$HOME/.local/atlas-bullseye/usr/lib/arm-linux-gnueabihf:$LD_LIBRARY_PATH"
 export XDG_CACHE_HOME="$HOME/.cache"
 export MEMPALACE_PALACE_PATH="$HOME/.mempalace/palace"
+export MEMPALACE_LITE=1
+export PYTHONPATH="$HOME/src/mempalace${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
 ## Repository Changes
@@ -47,6 +51,9 @@ The repository changes that made the armv7 setup work were:
   creation.
 - Replaced the default embedding path with a local hash-based embedding
   function so MemPalace can run without `onnxruntime` on `pi3`.
+- Added lite-mode runtime shims in `mempalace/__init__.py` and `sitecustomize.py`
+  so Chroma can start on armv7 without ONNX, telemetry/auth side paths, or the
+  old stdlib SQLite module getting in the way.
 - Updated the ingest/search/repair/Layers/MCP call sites to use the new
   compatibility helper instead of calling `chromadb.PersistentClient(...)`
   directly.
@@ -57,6 +64,8 @@ The repository changes that made the armv7 setup work were:
 The relevant code paths are:
 
 - [`mempalace/chroma_compat.py`](../mempalace/chroma_compat.py)
+- [`mempalace/__init__.py`](../mempalace/__init__.py)
+- [`sitecustomize.py`](../sitecustomize.py)
 - [`mempalace/miner.py`](../mempalace/miner.py)
 - [`mempalace/convo_miner.py`](../mempalace/convo_miner.py)
 - [`mempalace/layers.py`](../mempalace/layers.py)
@@ -64,6 +73,28 @@ The relevant code paths are:
 - [`mempalace/palace_graph.py`](../mempalace/palace_graph.py)
 - [`mempalace/cli.py`](../mempalace/cli.py)
 - [`mempalace/mcp_server.py`](../mempalace/mcp_server.py)
+
+## Repair / Bootstrap
+
+On `pi3`, the Telegram bot can now drive the runtime bootstrap itself with:
+
+```bash
+~/src/codex-telegram-bot/scripts/telegram_bot.py --repair-mempalace-runtime-and-exit
+```
+
+That path is intended to be the operational recovery entry point. It will:
+
+1. Create `~/.local/mempalace-venv` if missing.
+2. Ensure local SQLite `3.45.3` exists under `~/.local/sqlite-3.45.3`.
+3. Build or rebuild `pysqlite3` against that local SQLite.
+4. Reinstall the key Python packages needed by the armv7 MemPalace runtime.
+5. Run a smoke test that proves:
+   - SQLite `RETURNING` works
+   - Chroma collection create/upsert works
+   - `mempalace mine --mode convos` works
+
+If the host is missing essential build tools, the repair script will try
+`apt-get` (or `sudo -n apt-get`) for the basic toolchain first.
 
 ## Verification
 
@@ -74,6 +105,7 @@ Telegram bot:
 - `mempalace mine --mode convos`
 - `mempalace search`
 - MCP server startup and resource discovery
+- Telegram bot prune/import flow via `/conversation empty`
 
 The important result is that MemPalace now runs locally on `pi3` without
 requiring `onnxruntime`. The trade-off is that the local hash embedding is a

@@ -1,6 +1,12 @@
-"""MemPalace — Give your AI a memory. No API key required."""
+"""MemPalace runtime tweaks loaded automatically via Python's sitecustomize hook.
 
-import logging
+On constrained hosts, the lite runtime uses local hash embeddings instead of
+Chroma's default ONNX embedder. Recent chromadb builds decide whether to use the
+thin-client path during import, so we seed that flag here before chromadb loads.
+"""
+
+from __future__ import annotations
+
 import os
 import sys
 import types
@@ -25,13 +31,9 @@ def _chromadb_utils_path() -> str | None:
 
 if _lite_mode_from_env():
     try:
-        try:
-            import pysqlite3.dbapi2 as _sqlite3
+        import pysqlite3.dbapi2 as _sqlite3
 
-            sys.modules["sqlite3"] = _sqlite3
-        except Exception:
-            import sqlite3 as _sqlite3
-
+        sys.modules["sqlite3"] = _sqlite3
         _sqlite3.sqlite_version_info = (3, 45, 3)  # type: ignore[attr-defined]
         _sqlite3.sqlite_version = "3.45.3"  # type: ignore[attr-defined]
     except Exception:
@@ -98,57 +100,3 @@ if _lite_mode_from_env():
         opentelemetry.tracer = None  # type: ignore[attr-defined]
         opentelemetry.granularity = OpenTelemetryGranularity.NONE  # type: ignore[attr-defined]
         sys.modules["chromadb.telemetry.opentelemetry"] = opentelemetry
-
-    if "chromadb.utils.embedding_functions" not in sys.modules:
-        embedding_functions = types.ModuleType("chromadb.utils.embedding_functions")
-        embedding_functions.__package__ = "chromadb.utils"
-
-        class ChromaLangchainEmbeddingFunction:  # noqa: D401
-            pass
-
-        def DefaultEmbeddingFunction():
-            return None
-
-        def get_builtins():
-            return {"ChromaLangchainEmbeddingFunction"}
-
-        embedding_functions.ChromaLangchainEmbeddingFunction = ChromaLangchainEmbeddingFunction  # type: ignore[attr-defined]
-        embedding_functions.DefaultEmbeddingFunction = DefaultEmbeddingFunction  # type: ignore[attr-defined]
-        embedding_functions.get_builtins = get_builtins  # type: ignore[attr-defined]
-        sys.modules["chromadb.utils.embedding_functions"] = embedding_functions
-
-from .version import __version__  # noqa: E402
-
-# chromadb telemetry: posthog capture() was broken in 0.6.x causing noisy stderr
-# warnings ("capture() takes 1 positional argument but 3 were given"). In 1.x the
-# posthog client is a no-op stub, so this is now harmless — kept as a guard in
-# case future chromadb versions re-introduce real telemetry calls.
-logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
-
-# NOTE: the previous block set ``ORT_DISABLE_COREML=1`` on macOS arm64 as a
-# supposed workaround for the #74 ARM64 segfault.  Two problems:
-#
-# 1. ONNX Runtime does not read that env var -- it has no global way to
-#    disable a single execution provider, so the setdefault was a no-op.
-# 2. #74 is a null-pointer crash in ``chromadb_rust_bindings.abi3.so``, not
-#    an ONNX issue, so disabling CoreML would not have fixed it anyway.
-#
-# #521 has since traced the actual macOS arm64 crashes (both in mine and
-# search paths) to the 0.x chromadb hnswlib binding.  Filtering
-# CoreMLExecutionProvider at the ONNX layer leaves the hnswlib C++ crash
-# intact, so the real fix is upgrading chromadb to 1.5.4+, which #581
-# proposes.  See #397 for the history of this line.
-
-def main(*args, **kwargs):
-    """Compatibility shim for older console scripts.
-
-    Some installed wrappers still do ``from mempalace import main``.
-    Keep that import path working by delegating to the real CLI entry point.
-    """
-
-    from .cli import main as cli_main
-
-    return cli_main(*args, **kwargs)
-
-
-__all__ = ["__version__", "main"]
