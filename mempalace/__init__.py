@@ -24,4 +24,16 @@ logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICA
 # intact, so the real fix is upgrading chromadb to 1.5.4+, which #581
 # proposes.  See #397 for the history of this line.
 
-__all__ = ["__version__"]
+def main(*args, **kwargs):
+    """Compatibility shim for older console scripts.
+
+    Some installed wrappers still do ``from mempalace import main``.
+    Keep that import path working by delegating to the real CLI entry point.
+    """
+
+    from .cli import main as cli_main
+
+    return cli_main(*args, **kwargs)
+
+
+__all__ = ["__version__", "main"]
