@@ -7,6 +7,7 @@ import types
 from enum import Enum
 from pathlib import Path
 import importlib.util
+from typing import Optional
 
 
 def _lite_mode_from_env() -> bool:
@@ -14,7 +15,7 @@ def _lite_mode_from_env() -> bool:
     return value.lower() not in {"", "0", "false", "no", "off"}
 
 
-def _chromadb_utils_path() -> str | None:
+def _chromadb_utils_path() -> Optional[str]:
     spec = importlib.util.find_spec("chromadb")
     if spec is None or spec.origin is None:
         return None
