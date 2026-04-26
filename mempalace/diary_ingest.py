@@ -106,6 +106,10 @@ def ingest_diaries(
 
     drawers_col = get_collection(palace_path)
     closets_col = get_closets_collection(palace_path)
+    from .config import MempalaceConfig
+    from .forgetting import get_lifecycle_store
+
+    lifecycle = get_lifecycle_store(palace_path, MempalaceConfig().forgetting)
 
     days_updated = 0
     closets_created = 0
@@ -145,11 +149,13 @@ def ingest_diaries(
             }
             if entities:
                 drawer_meta["entities"] = entities
-            drawers_col.upsert(
-                documents=[text],
-                ids=[drawer_id],
-                metadatas=[drawer_meta],
-            )
+            if lifecycle.should_ingest(drawer_id, text, source_file):
+                drawers_col.upsert(
+                    documents=[text],
+                    ids=[drawer_id],
+                    metadatas=[drawer_meta],
+                )
+                lifecycle.register_ingest(drawer_id, text, drawer_meta)
 
             entries = _split_entries(text)
             prev_entry_count = state.get(state_key, {}).get("entry_count", 0)

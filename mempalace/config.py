@@ -84,6 +84,19 @@ def sanitize_content(value: str, max_length: int = 100_000) -> str:
 
 DEFAULT_PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 DEFAULT_COLLECTION_NAME = "mempalace_drawers"
+DEFAULT_FORGETTING = {
+    "enabled": True,
+    "mode": "hard_delete",
+    "profile": "conservative",
+    "auto_run_hooks": True,
+    "maintenance_min_interval_hours": 24,
+    "initial_strength_days": 30,
+    "decay_retrievability_threshold": 0.15,
+    "decay_after_days": 180,
+    "purge_after_days": 365,
+    "max_strength_days": 365,
+    "include_decayed_default": False,
+}
 
 DEFAULT_TOPIC_WINGS = [
     "emotions",
@@ -201,6 +214,32 @@ class MempalaceConfig:
         return self._file_config.get("hall_keywords", DEFAULT_HALL_KEYWORDS)
 
     @property
+    def forgetting(self):
+        """Forgetting / lifecycle policy."""
+        cfg = dict(DEFAULT_FORGETTING)
+        cfg.update(self._file_config.get("forgetting", {}))
+        env_prefix = "MEMPALACE_FORGETTING_"
+        for key, default in DEFAULT_FORGETTING.items():
+            raw = os.environ.get(env_prefix + key.upper())
+            if raw is None:
+                continue
+            if isinstance(default, bool):
+                cfg[key] = raw.lower() in {"1", "true", "yes", "on"}
+            elif isinstance(default, int) and not isinstance(default, bool):
+                try:
+                    cfg[key] = int(raw)
+                except ValueError:
+                    pass
+            elif isinstance(default, float):
+                try:
+                    cfg[key] = float(raw)
+                except ValueError:
+                    pass
+            else:
+                cfg[key] = raw
+        return cfg
+
+    @property
     def entity_languages(self):
         """Languages whose entity-detection patterns should be applied.
 
@@ -271,6 +310,7 @@ class MempalaceConfig:
                 "collection_name": DEFAULT_COLLECTION_NAME,
                 "topic_wings": DEFAULT_TOPIC_WINGS,
                 "hall_keywords": DEFAULT_HALL_KEYWORDS,
+                "forgetting": DEFAULT_FORGETTING,
             }
             with open(self._config_file, "w") as f:
                 json.dump(default_config, f, indent=2)

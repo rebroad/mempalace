@@ -215,6 +215,10 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
     * ``drawers_upserted`` — total writes = added + already_present.
     """
     collection = get_collection(palace_path, create=True)
+    from .config import MempalaceConfig
+    from .forgetting import get_lifecycle_store
+
+    lifecycle = get_lifecycle_store(palace_path, MempalaceConfig().forgetting)
     cursors: dict = {}
 
     drawers_added = 0
@@ -230,6 +234,7 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
         nonlocal drawers_added, drawers_already_present
         if not batch_ids:
             return
+        pending = list(zip(batch_ids, batch_docs, batch_metas))
         # Pre-flight: which IDs in this batch are already present?
         # Upsert is idempotent on data but counts as "added" would lie;
         # this pre-query makes the metric honest (Copilot PR 998 review).
@@ -253,6 +258,8 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
             documents=batch_docs,
             metadatas=batch_metas,
         )
+        for drawer_id, document, metadata in pending:
+            lifecycle.register_ingest(drawer_id, document, metadata)
         drawers_added += new_count
         drawers_already_present += already_count
         batch_ids.clear()
@@ -280,6 +287,9 @@ def sweep(jsonl_path: str, palace_path: str, source_label: Optional[str] = None)
             "filed_at": datetime.now().isoformat(),
             "ingest_mode": "sweep",
         }
+        if not lifecycle.should_ingest(drawer_id, document, metadata["source_file"]):
+            drawers_already_present += 1
+            continue
 
         batch_ids.append(drawer_id)
         batch_docs.append(document)

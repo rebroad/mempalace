@@ -433,6 +433,7 @@ def tool_search(
     max_distance: float = 1.5,
     min_similarity: float = None,
     context: str = None,
+    include_decayed: bool = False,
 ):
     limit = max(1, min(limit, _MAX_RESULTS))
     try:
@@ -453,6 +454,7 @@ def tool_search(
         room=room,
         n_results=limit,
         max_distance=dist,
+        include_decayed=include_decayed,
     )
     # Attach sanitizer metadata for transparency
     if sanitized["was_sanitized"]:
@@ -643,20 +645,25 @@ def tool_add_drawer(
         pass
 
     try:
+        from .forgetting import get_lifecycle_store
+
+        metadata = {
+            "wing": wing,
+            "room": room,
+            "source_file": source_file or "",
+            "chunk_index": 0,
+            "added_by": added_by,
+            "filed_at": datetime.now().isoformat(),
+        }
+        lifecycle = get_lifecycle_store(_config.palace_path, _config.forgetting)
+        if not lifecycle.should_ingest(drawer_id, content, metadata["source_file"]):
+            return {"success": True, "reason": "tombstoned", "drawer_id": drawer_id}
         col.upsert(
             ids=[drawer_id],
             documents=[content],
-            metadatas=[
-                {
-                    "wing": wing,
-                    "room": room,
-                    "source_file": source_file or "",
-                    "chunk_index": 0,
-                    "added_by": added_by,
-                    "filed_at": datetime.now().isoformat(),
-                }
-            ],
+            metadatas=[metadata],
         )
+        lifecycle.register_ingest(drawer_id, content, metadata)
         _metadata_cache = None
         logger.info(f"Filed drawer: {drawer_id} → {wing}/{room}")
         return {"success": True, "drawer_id": drawer_id, "wing": wing, "room": room}
@@ -688,11 +695,46 @@ def tool_delete_drawer(drawer_id: str):
 
     try:
         col.delete(ids=[drawer_id])
+        from .forgetting import get_lifecycle_store
+
+        get_lifecycle_store(_config.palace_path, _config.forgetting).delete_state(drawer_id)
         _metadata_cache = None
         logger.info(f"Deleted drawer: {drawer_id}")
         return {"success": True, "drawer_id": drawer_id}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def tool_forget_drawer(drawer_id: str, reason: str = "", dry_run: bool = False):
+    """Forget a drawer with tombstone + KG invalidation + closet rebuild."""
+    from .forgetting import forget_drawer
+
+    return forget_drawer(
+        _config.palace_path,
+        drawer_id,
+        reason=reason,
+        config=_config.forgetting,
+        dry_run=dry_run,
+    )
+
+
+def tool_forget_run(dry_run: bool = False, force: bool = False):
+    """Run lifecycle decay / purge maintenance."""
+    from .forgetting import run_forgetting_maintenance
+
+    return run_forgetting_maintenance(
+        _config.palace_path,
+        _config.forgetting,
+        dry_run=dry_run,
+        force=force,
+    )
+
+
+def tool_forget_stats():
+    """Show forgetting lifecycle state counts."""
+    from .forgetting import get_lifecycle_store
+
+    return get_lifecycle_store(_config.palace_path, _config.forgetting).stats()
 
 
 def tool_get_drawer(drawer_id: str):
@@ -1389,6 +1431,10 @@ TOOLS = {
                     "type": "string",
                     "description": "Background context for the search (optional). NOT used for embedding — only for future re-ranking.",
                 },
+                "include_decayed": {
+                    "type": "boolean",
+                    "description": "Include decayed memories in results (default false).",
+                },
             },
             "required": ["query"],
         },
@@ -1440,6 +1486,35 @@ TOOLS = {
             "required": ["drawer_id"],
         },
         "handler": tool_delete_drawer,
+    },
+    "mempalace_forget_drawer": {
+        "description": "Forget a drawer safely: tombstone it, invalidate linked KG facts, and rebuild affected closets.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "drawer_id": {"type": "string", "description": "ID of the drawer to forget"},
+                "reason": {"type": "string", "description": "Optional reason for the forgetting action"},
+                "dry_run": {"type": "boolean", "description": "Preview without deleting"},
+            },
+            "required": ["drawer_id"],
+        },
+        "handler": tool_forget_drawer,
+    },
+    "mempalace_forget_run": {
+        "description": "Run lifecycle maintenance: mark stale memories decayed and purge eligible low-value stale memories.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dry_run": {"type": "boolean", "description": "Preview maintenance without deleting"},
+                "force": {"type": "boolean", "description": "Ignore maintenance rate limit"},
+            },
+        },
+        "handler": tool_forget_run,
+    },
+    "mempalace_forget_stats": {
+        "description": "Show lifecycle forgetting state counts: active, decayed, tombstoned, tracked.",
+        "input_schema": {"type": "object", "properties": {}},
+        "handler": tool_forget_stats,
     },
     "mempalace_get_drawer": {
         "description": "Fetch a single drawer by ID — returns full content and metadata.",

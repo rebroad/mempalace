@@ -22,8 +22,9 @@ from pathlib import Path
 from collections import defaultdict
 
 from .config import MempalaceConfig
+from .forgetting import get_lifecycle_store
 from .palace import get_collection as _get_collection
-from .searcher import _first_or_empty, build_where_filter
+from .searcher import _first_or_empty, build_where_filter, search_memories
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +196,7 @@ class Layer2:
 
     def retrieve(self, wing: str = None, room: str = None, n_results: int = 10) -> str:
         """Retrieve drawers filtered by wing and/or room."""
+        cfg = MempalaceConfig()
         try:
             col = _get_collection(self.palace_path, create=False)
         except Exception:
@@ -213,6 +215,22 @@ class Layer2:
 
         docs = results.get("documents", [])
         metas = results.get("metadatas", [])
+        ids = results.get("ids", [])
+        lifecycle = get_lifecycle_store(self.palace_path, cfg.forgetting)
+        state_by_id = lifecycle.state_for_ids(ids)
+        filtered = []
+        for drawer_id, doc, meta in zip(ids, docs, metas):
+            if lifecycle.has_tombstone(drawer_id):
+                continue
+            state = state_by_id.get(drawer_id)
+            if state and state["state"] == "decayed" and not cfg.forgetting.get(
+                "include_decayed_default", False
+            ):
+                continue
+            filtered.append((drawer_id, doc, meta))
+        docs = [doc for _, doc, _ in filtered]
+        metas = [meta for _, _, meta in filtered]
+        lifecycle.note_accesses([drawer_id for drawer_id, _, _ in filtered[:n_results]])
 
         if not docs:
             label = f"wing={wing}" if wing else ""
@@ -252,50 +270,31 @@ class Layer3:
 
     def search(self, query: str, wing: str = None, room: str = None, n_results: int = 5) -> str:
         """Semantic search, returns compact result text."""
-        try:
-            col = _get_collection(self.palace_path, create=False)
-        except Exception:
-            return "No palace found."
-
-        where = build_where_filter(wing, room)
-
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        try:
-            results = col.query(**kwargs)
-        except Exception as e:
-            return f"Search error: {e}"
-
-        docs = _first_or_empty(results, "documents")
-        metas = _first_or_empty(results, "metadatas")
-        dists = _first_or_empty(results, "distances")
-
-        if not docs:
+        result = search_memories(
+            query=query,
+            palace_path=self.palace_path,
+            wing=wing,
+            room=room,
+            n_results=n_results,
+        )
+        if result.get("error"):
+            return result["error"]
+        hits = result.get("results", [])
+        if not hits:
             return "No results found."
 
         lines = [f'## L3 — SEARCH RESULTS for "{query}"']
-        for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
-            meta = meta or {}
-            doc = doc or ""
-            similarity = round(1 - dist, 3)
-            wing_name = meta.get("wing", "?")
-            room_name = meta.get("room", "?")
-            source = Path(meta.get("source_file", "")).name if meta.get("source_file") else ""
-
-            snippet = doc.strip().replace("\n", " ")
+        for i, hit in enumerate(hits, 1):
+            snippet = hit["text"].strip().replace("\n", " ")
             if len(snippet) > 300:
                 snippet = snippet[:297] + "..."
 
-            lines.append(f"  [{i}] {wing_name}/{room_name} (sim={similarity})")
+            lines.append(
+                f"  [{i}] {hit['wing']}/{hit['room']} (sim={hit['similarity']}, state={hit.get('state', 'active')})"
+            )
             lines.append(f"      {snippet}")
-            if source:
-                lines.append(f"      src: {source}")
+            if hit.get("source_file"):
+                lines.append(f"      src: {hit['source_file']}")
 
         return "\n".join(lines)
 
@@ -303,50 +302,14 @@ class Layer3:
         self, query: str, wing: str = None, room: str = None, n_results: int = 5
     ) -> list:
         """Return raw dicts instead of formatted text."""
-        try:
-            col = _get_collection(self.palace_path, create=False)
-        except Exception:
-            return []
-
-        where = build_where_filter(wing, room)
-
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        try:
-            results = col.query(**kwargs)
-        except Exception:
-            return []
-
-        hits = []
-        for doc, meta, dist in zip(
-            _first_or_empty(results, "documents"),
-            _first_or_empty(results, "metadatas"),
-            _first_or_empty(results, "distances"),
-        ):
-            # ChromaDB may return None for doc/meta when a drawer's HNSW entry
-            # exists but its metadata/document rows haven't been materialized
-            # (partial-flush states, mid-delete, schema upgrade boundaries).
-            # Degrade gracefully — the hit still appears with real distance;
-            # storage fields show their fallback where content is missing.
-            meta = meta or {}
-            doc = doc or ""
-            hits.append(
-                {
-                    "text": doc,
-                    "wing": meta.get("wing", "unknown"),
-                    "room": meta.get("room", "unknown"),
-                    "source_file": Path(meta.get("source_file", "?")).name,
-                    "similarity": round(1 - dist, 3),
-                    "metadata": meta,
-                }
-            )
-        return hits
+        result = search_memories(
+            query=query,
+            palace_path=self.palace_path,
+            wing=wing,
+            room=room,
+            n_results=n_results,
+        )
+        return result.get("results", [])
 
 
 # ---------------------------------------------------------------------------

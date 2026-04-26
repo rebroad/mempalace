@@ -13,6 +13,7 @@ import logging
 import math
 import re
 from pathlib import Path
+from typing import Optional
 
 from .palace import get_closets_collection, get_collection
 
@@ -43,6 +44,12 @@ def _first_or_empty(results, key: str) -> list:
     if not outer:
         return []
     return outer[0] or []
+
+
+def _result_list(results, key: str) -> list:
+    """Return a top-level list field from Chroma get()/query() compat objects."""
+    outer = getattr(results, key, None) if not isinstance(results, dict) else results.get(key)
+    return outer or []
 
 
 def _tokenize(text: str) -> list:
@@ -140,7 +147,8 @@ def _hybrid_rank(
     for r, raw, norm in zip(results, bm25_raw, bm25_norm):
         vec_sim = max(0.0, 1.0 - r.get("distance", 1.0))
         r["bm25_score"] = round(raw, 3)
-        scored.append((vector_weight * vec_sim + bm25_weight * norm, r))
+        retrievability = float(r.get("retrievability", 1.0))
+        scored.append(((vector_weight * vec_sim + bm25_weight * norm) * retrievability, r))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
     results[:] = [r for _, r in scored]
@@ -236,40 +244,36 @@ def _expand_with_neighbors(drawers_col, matched_doc: str, matched_meta: dict, ra
     }
 
 
-def search(query: str, palace_path: str, wing: str = None, room: str = None, n_results: int = 5):
+def search(
+    query: str,
+    palace_path: str,
+    wing: str = None,
+    room: str = None,
+    n_results: int = 5,
+    include_decayed: Optional[bool] = None,
+):
     """
     Search the palace. Returns verbatim drawer content.
     Optionally filter by wing (project) or room (aspect).
     """
-    try:
-        col = get_collection(palace_path, create=False)
-    except Exception:
+    result = search_memories(
+        query=query,
+        palace_path=palace_path,
+        wing=wing,
+        room=room,
+        n_results=n_results,
+        include_decayed=include_decayed,
+    )
+    if result.get("error") == "No palace found":
         print(f"\n  No palace found at {palace_path}")
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
         raise SearchError(f"No palace found at {palace_path}")
+    if result.get("error"):
+        print(f"\n  Search error: {result['error']}")
+        raise SearchError(result["error"])
 
-    where = build_where_filter(wing, room)
-
-    try:
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            kwargs["where"] = where
-
-        results = col.query(**kwargs)
-
-    except Exception as e:
-        print(f"\n  Search error: {e}")
-        raise SearchError(f"Search error: {e}") from e
-
-    docs = _first_or_empty(results, "documents")
-    metas = _first_or_empty(results, "metadatas")
-    dists = _first_or_empty(results, "distances")
-
-    if not docs:
+    hits = result.get("results", [])
+    if not hits:
         print(f'\n  No results found for: "{query}"')
         return
 
@@ -281,19 +285,18 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
         print(f"  Room: {room}")
     print(f"{'=' * 60}\n")
 
-    for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
-        similarity = round(max(0.0, 1 - dist), 3)
-        meta = meta or {}
-        source = Path(meta.get("source_file", "?")).name
-        wing_name = meta.get("wing", "?")
-        room_name = meta.get("room", "?")
+    for i, hit in enumerate(hits, 1):
+        source = hit.get("source_file", "?")
+        wing_name = hit.get("wing", "?")
+        room_name = hit.get("room", "?")
 
         print(f"  [{i}] {wing_name} / {room_name}")
         print(f"      Source: {source}")
-        print(f"      Match:  {similarity}")
+        print(f"      Match:  {hit.get('similarity', 0.0)}")
+        print(f"      State:  {hit.get('state', 'active')}")
         print()
         # Print the verbatim text, indented
-        for line in doc.strip().split("\n"):
+        for line in hit.get("text", "").strip().split("\n"):
             print(f"      {line}")
         print()
         print(f"  {'─' * 56}")
@@ -308,6 +311,7 @@ def search_memories(
     room: str = None,
     n_results: int = 5,
     max_distance: float = 0.0,
+    include_decayed: Optional[bool] = None,
 ) -> dict:
     """Programmatic search — returns a dict instead of printing.
 
@@ -334,6 +338,13 @@ def search_memories(
         }
 
     where = build_where_filter(wing, room)
+    from .config import MempalaceConfig
+    from .forgetting import get_lifecycle_store
+
+    forgetting_cfg = MempalaceConfig().forgetting
+    if include_decayed is None:
+        include_decayed = bool(forgetting_cfg.get("include_decayed_default", False))
+    lifecycle = get_lifecycle_store(palace_path, forgetting_cfg)
 
     # Hybrid retrieval: always query drawers directly (the floor), then use
     # closet hits to boost rankings. Closets are a ranking SIGNAL, never a
@@ -387,16 +398,25 @@ def search_memories(
     CLOSET_DISTANCE_CAP = 1.5  # cosine dist > 1.5 = too weak to use as signal
 
     scored: list = []
-    for doc, meta, dist in zip(
+    result_ids = _first_or_empty(drawer_results, "ids")
+    state_by_id = lifecycle.state_for_ids(result_ids)
+    for drawer_id, doc, meta, dist in zip(
+        result_ids,
         _first_or_empty(drawer_results, "documents"),
         _first_or_empty(drawer_results, "metadatas"),
         _first_or_empty(drawer_results, "distances"),
     ):
+        if lifecycle.has_tombstone(drawer_id):
+            continue
         # Filter on raw distance before rounding to avoid precision loss.
         if max_distance > 0.0 and dist > max_distance:
             continue
 
         meta = meta or {}
+        lifecycle_row = state_by_id.get(drawer_id)
+        retrievability = lifecycle.retrievability(lifecycle_row) if lifecycle_row else 1.0
+        if lifecycle_row and lifecycle_row["state"] == "decayed" and not include_decayed:
+            continue
         source = meta.get("source_file", "") or ""
         boost = 0.0
         matched_via = "drawer"
@@ -409,17 +429,21 @@ def search_memories(
                 closet_preview = c_preview
 
         effective_dist = dist - boost
+        adjusted_similarity = max(0.0, 1 - effective_dist)
         entry = {
+            "drawer_id": drawer_id,
             "text": doc,
             "wing": meta.get("wing", "unknown"),
             "room": meta.get("room", "unknown"),
             "source_file": Path(source).name if source else "?",
             "created_at": meta.get("filed_at", "unknown"),
-            "similarity": round(max(0.0, 1 - effective_dist), 3),
+            "similarity": round(adjusted_similarity, 3),
             "distance": round(dist, 4),
             "effective_distance": round(effective_dist, 4),
             "closet_boost": round(boost, 3),
             "matched_via": matched_via,
+            "retrievability": round(retrievability, 3),
+            "state": lifecycle_row["state"] if lifecycle_row else "active",
             # Internal: retain the full source_file path + chunk_index so the
             # enrichment step below doesn't have to reverse-lookup via
             # basename-suffix matching (which silently collides when two
@@ -454,8 +478,8 @@ def search_memories(
             )
         except Exception:
             continue
-        docs = source_drawers.documents
-        metas_ = source_drawers.metadatas
+        docs = _result_list(source_drawers, "documents")
+        metas_ = _result_list(source_drawers, "metadatas")
         if len(docs) <= 1:
             continue
 
@@ -492,6 +516,7 @@ def search_memories(
 
     # BM25 hybrid re-rank within the final candidate set.
     hits = _hybrid_rank(hits, query)
+    lifecycle.note_accesses([h["drawer_id"] for h in hits if h.get("drawer_id")])
     for h in hits:
         h.pop("_sort_key", None)
         h.pop("_source_file_full", None)

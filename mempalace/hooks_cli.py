@@ -296,6 +296,26 @@ def _mine_sync(transcript_path: str = ""):
         pass
 
 
+def _maybe_run_forgetting_maintenance():
+    """Run forgetting maintenance opportunistically from hooks."""
+    try:
+        from .config import MempalaceConfig
+        from .forgetting import run_forgetting_maintenance
+    except Exception:
+        return
+
+    cfg = MempalaceConfig()
+    forgetting = cfg.forgetting
+    if not forgetting.get("enabled", True):
+        return
+    if not forgetting.get("auto_run_hooks", True):
+        return
+    try:
+        run_forgetting_maintenance(cfg.palace_path, forgetting, dry_run=False, force=False)
+    except Exception as exc:
+        _log(f"WARNING: forgetting maintenance failed: {exc}")
+
+
 def _desktop_toast(body: str, title: str = "MemPalace"):
     """Send a desktop notification via notify-send. Fails silently."""
     try:
@@ -593,6 +613,7 @@ def hook_stop(data: dict, harness: str):
                 )
                 _ingest_transcript(transcript_path)
             _maybe_auto_ingest(transcript_path)
+            _maybe_run_forgetting_maintenance()
             # Only advance save marker after successful save
             count = result.get("count", 0)
             if count > 0:
@@ -657,6 +678,7 @@ def hook_precompact(data: dict, harness: str):
 
     # Mine synchronously so data lands before compaction proceeds
     _mine_sync(transcript_path)
+    _maybe_run_forgetting_maintenance()
 
     _output({})
 

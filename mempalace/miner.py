@@ -634,9 +634,19 @@ def _extract_entities_for_metadata(content: str) -> str:
 
 
 def add_drawer(
-    collection, wing: str, room: str, content: str, source_file: str, chunk_index: int, agent: str
+    collection,
+    palace_path: str,
+    wing: str,
+    room: str,
+    content: str,
+    source_file: str,
+    chunk_index: int,
+    agent: str,
 ):
     """Add one drawer to the palace."""
+    from .config import MempalaceConfig
+    from .forgetting import get_lifecycle_store
+
     drawer_id = f"drawer_{wing}_{room}_{hashlib.sha256((source_file + str(chunk_index)).encode()).hexdigest()[:24]}"
     try:
         metadata = {
@@ -659,11 +669,15 @@ def add_drawer(
         entities = _extract_entities_for_metadata(content)
         if entities:
             metadata["entities"] = entities
+        lifecycle = get_lifecycle_store(palace_path, MempalaceConfig().forgetting)
+        if not lifecycle.should_ingest(drawer_id, content, source_file):
+            return False
         collection.upsert(
             documents=[content],
             ids=[drawer_id],
             metadatas=[metadata],
         )
+        lifecycle.register_ingest(drawer_id, content, metadata)
         return True
     except Exception:
         raise
@@ -677,6 +691,7 @@ def add_drawer(
 def process_file(
     filepath: Path,
     project_path: Path,
+    palace_path: str,
     collection,
     wing: str,
     rooms: list,
@@ -711,6 +726,9 @@ def process_file(
     # Without the lock, two agents can both pass file_already_mined(),
     # both delete, and both insert — creating duplicates or losing data.
     with mine_lock(source_file):
+        from .config import MempalaceConfig
+        from .forgetting import get_lifecycle_store
+
         # Re-check after acquiring lock — another agent may have just finished
         if file_already_mined(collection, source_file, check_mtime=True):
             return 0, room
@@ -724,11 +742,15 @@ def process_file(
             collection.delete(where={"source_file": source_file})
         except Exception:
             pass
+        get_lifecycle_store(palace_path, MempalaceConfig().forgetting).delete_states_for_source_file(
+            source_file
+        )
 
         drawers_added = 0
         for chunk in chunks:
             added = add_drawer(
                 collection=collection,
+                palace_path=palace_path,
                 wing=wing,
                 room=room,
                 content=chunk["content"],
@@ -898,6 +920,7 @@ def mine(
         drawers, room = process_file(
             filepath=filepath,
             project_path=project_path,
+            palace_path=palace_path,
             collection=collection,
             wing=wing,
             rooms=rooms,

@@ -231,9 +231,61 @@ def cmd_search(args):
             wing=args.wing,
             room=args.room,
             n_results=args.results,
+            include_decayed=args.include_decayed,
         )
     except SearchError:
         sys.exit(1)
+
+
+def cmd_forget(args):
+    from .forgetting import forget_drawer, get_lifecycle_store, run_forgetting_maintenance
+
+    cfg = MempalaceConfig()
+    palace_path = os.path.expanduser(args.palace) if args.palace else cfg.palace_path
+
+    if args.forget_action == "drawer":
+        result = forget_drawer(
+            palace_path,
+            args.drawer_id,
+            reason=args.reason or "",
+            config=cfg.forgetting,
+            dry_run=args.dry_run,
+        )
+        if not result.get("success"):
+            print(result.get("error", "Forget failed"), file=sys.stderr)
+            sys.exit(1)
+        mode = "Would forget" if args.dry_run else "Forgot"
+        print(f"{mode} drawer {result['drawer_id']}")
+        if result.get("kg_invalidated") is not None:
+            print(f"  KG facts invalidated: {result['kg_invalidated']}")
+        if result.get("closets_rebuilt") is not None:
+            print(f"  Closets rebuilt: {result['closets_rebuilt']}")
+        return
+
+    if args.forget_action == "run":
+        result = run_forgetting_maintenance(
+            palace_path,
+            cfg.forgetting,
+            dry_run=args.dry_run,
+            force=args.force,
+        )
+        if result.get("skipped"):
+            print(f"Maintenance skipped: {result.get('reason')}")
+            return
+        print(
+            f"Decayed marked: {result['decayed_marked']} | "
+            f"Purge candidates: {result['purge_candidates']} | "
+            f"Deleted: {result['deleted_count']}"
+        )
+        return
+
+    if args.forget_action == "stats":
+        stats = get_lifecycle_store(palace_path, cfg.forgetting).stats()
+        print(f"Active: {stats['active']}")
+        print(f"Decayed: {stats['decayed']}")
+        print(f"Tombstones: {stats['tombstones']}")
+        print(f"Tracked drawers: {stats['drawer_state_total']}")
+        return
 
 
 def cmd_wakeup(args):
@@ -680,6 +732,23 @@ def main():
     p_search.add_argument("--wing", default=None, help="Limit to one project")
     p_search.add_argument("--room", default=None, help="Limit to one room")
     p_search.add_argument("--results", type=int, default=5, help="Number of results")
+    p_search.add_argument(
+        "--include-decayed",
+        action="store_true",
+        help="Include decayed memories in results",
+    )
+
+    # forget
+    p_forget = sub.add_parser("forget", help="Forget memories and run lifecycle maintenance")
+    forget_sub = p_forget.add_subparsers(dest="forget_action")
+    p_forget_drawer = forget_sub.add_parser("drawer", help="Forget a drawer by ID")
+    p_forget_drawer.add_argument("drawer_id")
+    p_forget_drawer.add_argument("--reason", default="")
+    p_forget_drawer.add_argument("--dry-run", action="store_true")
+    p_forget_run = forget_sub.add_parser("run", help="Run lifecycle maintenance")
+    p_forget_run.add_argument("--dry-run", action="store_true")
+    p_forget_run.add_argument("--force", action="store_true")
+    forget_sub.add_parser("stats", help="Show lifecycle statistics")
 
     # compress
     p_compress = sub.add_parser(
@@ -802,6 +871,13 @@ def main():
             return
         args.name = name
         cmd_instructions(args)
+        return
+
+    if args.command == "forget":
+        if not getattr(args, "forget_action", None):
+            p_forget.print_help()
+            return
+        cmd_forget(args)
         return
 
     dispatch = {

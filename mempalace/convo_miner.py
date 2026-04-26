@@ -306,7 +306,7 @@ def scan_convos(convo_dir: str) -> list:
 # =============================================================================
 
 
-def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extract_mode):
+def _file_chunks_locked(collection, palace_path, source_file, chunks, wing, room, agent, extract_mode):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
     Combines the per-file serialization that prevents concurrent agents from
@@ -318,6 +318,10 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
     room_counts_delta: dict = defaultdict(int)
     drawers_added = 0
     with mine_lock(source_file):
+        from .config import MempalaceConfig
+        from .forgetting import get_lifecycle_store
+
+        lifecycle = get_lifecycle_store(palace_path, MempalaceConfig().forgetting)
         # Re-check after lock — another agent may have just finished this file
         # at the current schema. A stale-version hit here returns False, so we
         # still fall through to the purge+rebuild path below.
@@ -331,6 +335,7 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
             collection.delete(where={"source_file": source_file})
         except Exception:
             pass
+        lifecycle.delete_states_for_source_file(source_file)
 
         for chunk in chunks:
             chunk_room = chunk.get("memory_type", room) if extract_mode == "general" else room
@@ -338,24 +343,26 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
                 room_counts_delta[chunk_room] += 1
             drawer_id = f"drawer_{wing}_{chunk_room}_{hashlib.sha256((source_file + str(chunk['chunk_index'])).encode()).hexdigest()[:24]}"
             try:
+                metadata = {
+                    "wing": wing,
+                    "room": chunk_room,
+                    "hall": _detect_hall_cached(chunk["content"]),
+                    "source_file": source_file,
+                    "chunk_index": chunk["chunk_index"],
+                    "added_by": agent,
+                    "filed_at": datetime.now().isoformat(),
+                    "ingest_mode": "convos",
+                    "extract_mode": extract_mode,
+                    "normalize_version": NORMALIZE_VERSION,
+                }
+                if not lifecycle.should_ingest(drawer_id, chunk["content"], source_file):
+                    continue
                 collection.upsert(
                     documents=[chunk["content"]],
                     ids=[drawer_id],
-                    metadatas=[
-                        {
-                            "wing": wing,
-                            "room": chunk_room,
-                            "hall": _detect_hall_cached(chunk["content"]),
-                            "source_file": source_file,
-                            "chunk_index": chunk["chunk_index"],
-                            "added_by": agent,
-                            "filed_at": datetime.now().isoformat(),
-                            "ingest_mode": "convos",
-                            "extract_mode": extract_mode,
-                            "normalize_version": NORMALIZE_VERSION,
-                        }
-                    ],
+                    metadatas=[metadata],
                 )
+                lifecycle.register_ingest(drawer_id, chunk["content"], metadata)
                 drawers_added += 1
             except Exception as e:
                 if "already exists" not in str(e).lower():
@@ -469,7 +476,7 @@ def mine_convos(
         # Lock + purge stale + file fresh chunks. Lock serializes concurrent
         # agents; purge removes pre-v2 drawers so the schema bump applies.
         drawers_added, room_delta, skipped = _file_chunks_locked(
-            collection, source_file, chunks, wing, room, agent, extract_mode
+            collection, palace_path, source_file, chunks, wing, room, agent, extract_mode
         )
         if skipped:
             files_skipped += 1
