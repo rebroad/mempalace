@@ -7,6 +7,7 @@ import types
 from enum import Enum
 from pathlib import Path
 import importlib.util
+import tempfile
 from typing import Optional
 
 
@@ -24,19 +25,76 @@ def _chromadb_utils_path() -> Optional[str]:
     return str(utils_path) if utils_path.exists() else None
 
 
+def _sqlite_runtime_supports_chroma(sqlite3_module) -> tuple[bool, str]:
+    """Probe the actual SQLite engine features Chroma lite needs.
+
+    Version strings are not enough here. On pi3 we observed a runtime that
+    reported a newer SQLite version while still lacking DROP COLUMN and the
+    trigram FTS5 tokenizer that Chroma migrations require.
+    """
+    path = None
+    conn = None
+    try:
+        fd, path = tempfile.mkstemp(suffix=".sqlite3", dir="/var/tmp")
+        os.close(fd)
+        conn = sqlite3_module.connect(path)
+        cur = conn.cursor()
+        cur.execute(
+            "CREATE TABLE collections ("
+            "id TEXT PRIMARY KEY, "
+            "name TEXT NOT NULL, "
+            "topic TEXT NOT NULL, "
+            "dimension INTEGER, "
+            "database_id TEXT NOT NULL, "
+            "UNIQUE(name, database_id))"
+        )
+        conn.commit()
+        cur.execute("ALTER TABLE collections DROP COLUMN topic")
+        conn.commit()
+        cur.execute(
+            'CREATE VIRTUAL TABLE embedding_fulltext_search '
+            'USING fts5(string_value, tokenize="trigram")'
+        )
+        conn.commit()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+
+def _require_sqlite_runtime_features(sqlite3_module) -> None:
+    ok, detail = _sqlite_runtime_supports_chroma(sqlite3_module)
+    if ok:
+        return
+    lib_hint = str(Path.home() / ".local" / "sqlite-3.45.3" / "lib")
+    raise RuntimeError(
+        "MemPalace lite mode requires a SQLite runtime with DROP COLUMN and "
+        f'FTS5 trigram support. Current sqlite3 reports "{sqlite3_module.sqlite_version}" '
+        f"but does not provide the required features ({detail}). "
+        "Do not rely on a spoofed version string. Start Python with the correct "
+        f'LD_LIBRARY_PATH, for example: LD_LIBRARY_PATH="{lib_hint}" ...'
+    )
+
+
 if _lite_mode_from_env():
     try:
-        try:
-            import pysqlite3.dbapi2 as _sqlite3
+        import pysqlite3.dbapi2 as _sqlite3
 
-            sys.modules["sqlite3"] = _sqlite3
-        except Exception:
-            import sqlite3 as _sqlite3
-
-        _sqlite3.sqlite_version_info = (3, 45, 3)  # type: ignore[attr-defined]
-        _sqlite3.sqlite_version = "3.45.3"  # type: ignore[attr-defined]
+        sys.modules["sqlite3"] = _sqlite3
     except Exception:
-        pass
+        import sqlite3 as _sqlite3
+
+    _require_sqlite_runtime_features(_sqlite3)
 
     if "chromadb.utils" not in sys.modules:
         utils_pkg = types.ModuleType("chromadb.utils")
