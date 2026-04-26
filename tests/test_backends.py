@@ -18,6 +18,7 @@ from mempalace.backends.chroma import (
     _fix_blob_seq_ids,
     quarantine_stale_hnsw,
 )
+from mempalace import palace as palace_module
 
 
 class _FakeCollection:
@@ -117,6 +118,17 @@ def test_chroma_collection_query_empty_result_preserves_outer_shape():
     assert result.ids == [[], []]
     assert result.documents == [[], []]
     assert result.distances == [[], []]
+
+
+def test_palace_backend_tracks_lite_env_changes(monkeypatch):
+    monkeypatch.delenv("MEMPALACE_LITE", raising=False)
+    palace_module._DEFAULT_BACKEND = None
+    backend = palace_module._default_backend()
+    assert backend._lite is False
+
+    monkeypatch.setenv("MEMPALACE_LITE", "1")
+    backend = palace_module._default_backend()
+    assert backend._lite is True
 
 
 def test_chroma_collection_rejects_unknown_where_operator():

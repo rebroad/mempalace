@@ -9,7 +9,7 @@ import hashlib
 import os
 import re
 
-from .backends.chroma import ChromaBackend
+from .backends.chroma import ChromaBackend, _lite_mode_from_env
 
 SKIP_DIRS = {
     ".git",
@@ -37,7 +37,22 @@ SKIP_DIRS = {
     "target",
 }
 
-_DEFAULT_BACKEND = ChromaBackend()
+_DEFAULT_BACKEND = None
+
+
+def _default_backend() -> ChromaBackend:
+    """Return a backend matching the current lite-mode env.
+
+    The CLI sets ``MEMPALACE_LITE`` after imports, and tests often patch the
+    environment mid-process. A module-global backend instantiated at import time
+    would freeze the earlier mode and route later calls down the wrong Chroma
+    path.
+    """
+    global _DEFAULT_BACKEND
+    lite = _lite_mode_from_env()
+    if _DEFAULT_BACKEND is None or getattr(_DEFAULT_BACKEND, "_lite", None) != lite:
+        _DEFAULT_BACKEND = ChromaBackend(lite=lite)
+    return _DEFAULT_BACKEND
 
 # Schema version for drawer normalization. Bump when the normalization
 # pipeline changes in a way that existing drawers should be rebuilt to pick up
@@ -56,7 +71,7 @@ def get_collection(
     create: bool = True,
 ):
     """Get the palace collection through the backend layer."""
-    return _DEFAULT_BACKEND.get_collection(
+    return _default_backend().get_collection(
         palace_path,
         collection_name=collection_name,
         create=create,

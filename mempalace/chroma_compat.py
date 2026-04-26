@@ -12,6 +12,25 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
 
 
 class LocalHashEmbeddingFunction:
+    @staticmethod
+    def name() -> str:
+        return "mempalace_local_hash"
+
+    @staticmethod
+    def build_from_config(config: dict[str, object]) -> "LocalHashEmbeddingFunction":
+        LocalHashEmbeddingFunction.validate_config(config)
+        return LocalHashEmbeddingFunction()
+
+    def get_config(self) -> dict[str, object]:
+        return {}
+
+    @staticmethod
+    def validate_config(config: dict[str, object]) -> None:
+        return None
+
+    def is_legacy(self) -> bool:
+        return False
+
     def __call__(self, input: Iterable[str]) -> list[list[float]]:
         return [self._embed_text(text) for text in input]
 

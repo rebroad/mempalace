@@ -100,3 +100,58 @@ if _lite_mode_from_env():
         opentelemetry.tracer = None  # type: ignore[attr-defined]
         opentelemetry.granularity = OpenTelemetryGranularity.NONE  # type: ignore[attr-defined]
         sys.modules["chromadb.telemetry.opentelemetry"] = opentelemetry
+
+    if "chromadb.utils.embedding_functions" not in sys.modules:
+        embedding_functions = types.ModuleType("chromadb.utils.embedding_functions")
+        embedding_functions.__package__ = "chromadb.utils"
+
+        class ChromaLangchainEmbeddingFunction:  # noqa: D401
+            pass
+
+        class DefaultEmbeddingFunction:  # noqa: D401
+            @staticmethod
+            def name() -> str:
+                return "default"
+
+            @staticmethod
+            def build_from_config(config):
+                return DefaultEmbeddingFunction()
+
+            def get_config(self):
+                return {}
+
+            def is_legacy(self) -> bool:
+                return False
+
+            def __call__(self, input):
+                return []
+
+        def get_builtins():
+            return {"ChromaLangchainEmbeddingFunction", "DefaultEmbeddingFunction"}
+
+        known_embedding_functions = {"default": DefaultEmbeddingFunction}
+
+        def register_embedding_function(ef_class=None):
+            def _register(cls):
+                try:
+                    known_embedding_functions[cls.name()] = cls
+                except Exception:
+                    pass
+                return cls
+
+            if ef_class is not None:
+                return _register(ef_class)
+            return _register
+
+        def config_to_embedding_function(config):
+            name = config.get("name", "default")
+            cls = known_embedding_functions[name]
+            return cls.build_from_config(config.get("config", {}))
+
+        embedding_functions.ChromaLangchainEmbeddingFunction = ChromaLangchainEmbeddingFunction  # type: ignore[attr-defined]
+        embedding_functions.DefaultEmbeddingFunction = DefaultEmbeddingFunction  # type: ignore[attr-defined]
+        embedding_functions.get_builtins = get_builtins  # type: ignore[attr-defined]
+        embedding_functions.known_embedding_functions = known_embedding_functions  # type: ignore[attr-defined]
+        embedding_functions.register_embedding_function = register_embedding_function  # type: ignore[attr-defined]
+        embedding_functions.config_to_embedding_function = config_to_embedding_function  # type: ignore[attr-defined]
+        sys.modules["chromadb.utils.embedding_functions"] = embedding_functions
