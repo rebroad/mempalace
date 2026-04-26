@@ -70,7 +70,10 @@ def _parse_dt(value: Optional[str]) -> datetime:
     if not value:
         return _utcnow()
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=_UTC)
+        return parsed.astimezone(_UTC)
     except ValueError:
         return _utcnow()
 

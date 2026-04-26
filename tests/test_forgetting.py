@@ -271,3 +271,46 @@ def test_maintenance_rate_limit_skips_without_force(tmp_path, monkeypatch):
     assert result["success"] is True
     assert result["skipped"] is True
     assert result["reason"] == "rate_limited"
+
+
+def test_maintenance_handles_naive_stored_timestamps(tmp_path, monkeypatch):
+    cfg_dir = _write_config(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    palace_path = str(tmp_path / "palace")
+    col = FakeCollection()
+    monkeypatch.setattr("mempalace.forgetting.get_collection", lambda *args, **kwargs: col)
+    monkeypatch.setattr("mempalace.forgetting.rebuild_closets_for_source_file", lambda *args, **kwargs: 0)
+    cfg = MempalaceConfig(config_dir=str(cfg_dir)).forgetting
+    lifecycle = get_lifecycle_store(palace_path, cfg)
+
+    doc = "Naive timestamp regression."
+    meta = {
+        "wing": "project",
+        "room": "technical",
+        "source_file": "/repo/naive.txt",
+        "filed_at": _iso_now(),
+    }
+    col.upsert(ids=["drawer_naive"], documents=[doc], metadatas=[meta])
+    lifecycle.register_ingest("drawer_naive", doc, meta)
+    lifecycle._conn.execute(
+        """
+        UPDATE drawer_state
+           SET created_at = ?,
+               last_accessed_at = ?
+         WHERE drawer_id = 'drawer_naive'
+        """,
+        (
+            "2026-01-01T12:00:00",
+            "2026-01-01T12:00:00",
+        ),
+    )
+    lifecycle._conn.commit()
+
+    result = run_forgetting_maintenance(
+        palace_path,
+        cfg,
+        dry_run=True,
+        force=True,
+    )
+    assert result["success"] is True
+    assert result["skipped"] is False
